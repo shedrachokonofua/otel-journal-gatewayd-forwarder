@@ -66,7 +66,10 @@ impl Collector {
         );
 
         // Fetch entries from journal
-        let entries = match self.journal.fetch(current_cursor.as_deref(), self.batch_size) {
+        let entries = match self
+            .journal
+            .fetch(current_cursor.as_deref(), self.batch_size)
+        {
             Ok(entries) => entries,
             Err(JournalError::InvalidCursor) => {
                 warn!(
@@ -114,7 +117,10 @@ impl Collector {
         );
 
         // Forward to OTLP
-        match self.otlp.send(&self.source.name, &entries, &self.source.labels) {
+        match self
+            .otlp
+            .send(&self.source.name, &entries, &self.source.labels)
+        {
             Ok(()) => {
                 // Only advance cursor after successful OTLP push
                 if let Some(cursor) = last_cursor {
@@ -206,4 +212,3 @@ mod tests {
     // Integration tests would require mocking the HTTP endpoints
     // Use wiremock for proper testing when available
 }
-

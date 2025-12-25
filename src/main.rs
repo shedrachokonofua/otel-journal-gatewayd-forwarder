@@ -179,4 +179,3 @@ extern "C" fn handle_signal(_: libc::c_int) {
         flag.store(true, Ordering::Relaxed);
     }
 }
-
