@@ -206,10 +206,8 @@ fn build_otlp_payload(
         }
 
         // Build log records
-        let log_records: Vec<LogRecord> = service_entries
-            .into_iter()
-            .map(|entry| build_log_record(entry))
-            .collect();
+        let log_records: Vec<LogRecord> =
+            service_entries.into_iter().map(build_log_record).collect();
 
         resource_logs.push(ResourceLogs {
             resource: Resource {

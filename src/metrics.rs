@@ -164,7 +164,7 @@ pub fn start_server(addr: &str, state: Arc<MetricsState>) -> Result<(), MetricsE
 
 fn handle_request(mut stream: TcpStream, state: &MetricsState) -> std::io::Result<()> {
     let mut buf = [0u8; 1024];
-    stream.read(&mut buf)?;
+    let _ = stream.read(&mut buf)?;
 
     // Simple HTTP parsing - just check for GET /metrics
     let request = String::from_utf8_lossy(&buf);
