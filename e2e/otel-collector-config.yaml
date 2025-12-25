@@ -1,0 +1,21 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: "0.0.0.0:4318"
+
+exporters:
+  file:
+    path: /test-results/logs.json
+    rotation:
+      max_megabytes: 10
+      max_backups: 1
+  debug:
+    verbosity: detailed
+
+service:
+  pipelines:
+    logs:
+      receivers: [otlp]
+      exporters: [file, debug]
+

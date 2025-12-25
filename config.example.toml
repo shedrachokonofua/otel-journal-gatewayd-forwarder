@@ -1,0 +1,46 @@
+# otel-journal-gatewayd-forwarder configuration
+# Copy to /etc/otel-journal-gatewayd-forwarder/config.toml
+
+# OTLP endpoint (required)
+# Supports OTLP/HTTP with JSON encoding
+# Logs are sent to {endpoint}/v1/logs
+otlp_endpoint = "http://localhost:4318"
+
+# Poll interval - how often to check sources for new entries
+# Default: 5s
+poll_interval = "5s"
+
+# Maximum entries to fetch per request
+# Default: 500
+batch_size = 500
+
+# Directory to store cursor files for crash-safe resume
+# Default: /var/lib/otel-journal-gatewayd-forwarder
+cursor_dir = "/var/lib/otel-journal-gatewayd-forwarder"
+
+# Sources to collect from
+# Each source is a systemd-journal-gatewayd endpoint
+
+[[sources]]
+name = "host-01"
+url = "http://192.168.1.10:19531"
+
+[[sources]]
+name = "host-02"
+url = "http://192.168.1.11:19531"
+# Optional: only collect specific systemd units
+units = ["sshd.service", "docker.service"]
+
+[[sources]]
+name = "host-03"
+url = "https://host-03.internal:19531"
+# Optional: custom labels added to all logs from this source
+labels = { datacenter = "us-east-1", role = "gateway" }
+
+# Example with all options
+# [[sources]]
+# name = "production-web-01"
+# url = "http://10.0.0.1:19531"
+# units = ["nginx.service", "myapp.service"]
+# labels = { environment = "production", team = "web", region = "us-west-2" }
+

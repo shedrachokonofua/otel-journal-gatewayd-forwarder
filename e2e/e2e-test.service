@@ -1,0 +1,16 @@
+[Unit]
+Description=E2E Test Runner (manual trigger only)
+After=systemd-journal-gatewayd.socket otel-collector.service test-log-generator.service
+Wants=systemd-journal-gatewayd.socket otel-collector.service test-log-generator.service
+
+[Service]
+Type=oneshot
+ExecStart=/app/e2e/run-e2e-test.sh
+StandardOutput=journal+console
+StandardError=journal+console
+ExecStopPost=/bin/bash -c 'echo $SERVICE_RESULT > /test-results/result.txt'
+ExecStopPost=/bin/systemctl poweroff --force
+
+# NOT enabled by default - triggered manually via podman exec
+# [Install]
+# WantedBy=multi-user.target

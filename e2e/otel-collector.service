@@ -1,0 +1,13 @@
+[Unit]
+Description=OpenTelemetry Collector for E2E Testing
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/otelcol --config=/app/e2e/otel-collector-config.yaml
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+

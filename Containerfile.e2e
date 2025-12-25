@@ -1,0 +1,64 @@
+# E2E Test Container
+# Fully self-contained environment with:
+# - systemd + journald (log source)
+# - systemd-journal-gatewayd (HTTP API for journal)
+# - OpenTelemetry Collector (real OTLP receiver -> file)
+# - The forwarder binary
+#
+# Run with: podman run --rm --privileged <image>
+
+FROM registry.fedoraproject.org/fedora:41
+
+# Install dependencies
+RUN dnf install -y \
+    systemd \
+    systemd-journal-remote \
+    rust \
+    cargo \
+    openssl-devel \
+    procps-ng \
+    curl \
+    jq \
+    && dnf clean all
+
+# Install OpenTelemetry Collector
+ARG OTEL_VERSION=0.115.0
+RUN curl -fsSL "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}/otelcol_${OTEL_VERSION}_linux_amd64.tar.gz" \
+    | tar -xz -C /usr/local/bin otelcol
+
+# Create directories
+RUN mkdir -p /app /var/lib/otel-journal-gatewayd-forwarder /test-results
+
+WORKDIR /app
+
+# Copy source code
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+# Build the forwarder in release mode
+RUN cargo build --release && \
+    cp target/release/otel-journal-gatewayd-forwarder /usr/local/bin/ && \
+    cargo clean
+
+# Copy e2e test files
+COPY e2e/ /app/e2e/
+RUN chmod +x /app/e2e/*.sh
+
+# Configure systemd-journal-gatewayd to listen on port 19531
+RUN mkdir -p /etc/systemd/system/systemd-journal-gatewayd.socket.d && \
+    printf '[Socket]\nListenStream=\nListenStream=19531\n' > /etc/systemd/system/systemd-journal-gatewayd.socket.d/override.conf
+
+# Install and enable services
+COPY e2e/test-log-generator.service /etc/systemd/system/
+COPY e2e/otel-collector.service /etc/systemd/system/
+COPY e2e/e2e-test.service /etc/systemd/system/
+
+# Enable services (but NOT e2e-test - that runs via podman exec)
+RUN systemctl enable systemd-journal-gatewayd.socket && \
+    systemctl enable test-log-generator.service && \
+    systemctl enable otel-collector.service
+
+# The test runs automatically via systemd
+# Container exits when e2e-test.service completes
+
+CMD ["/sbin/init"]

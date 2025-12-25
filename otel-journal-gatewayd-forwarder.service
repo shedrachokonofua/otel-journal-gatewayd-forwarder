@@ -1,0 +1,20 @@
+[Unit]
+Description=OTLP Journal Gatewayd Forwarder
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/otel-journal-gatewayd-forwarder -c /etc/otel-journal-gatewayd-forwarder/config.toml
+Restart=always
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/otel-journal-gatewayd-forwarder
+
+[Install]
+WantedBy=multi-user.target
+

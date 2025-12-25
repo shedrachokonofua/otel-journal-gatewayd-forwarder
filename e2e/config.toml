@@ -1,0 +1,20 @@
+# E2E Test Configuration
+
+# Mock OTLP receiver
+otlp_endpoint = "http://127.0.0.1:4318"
+
+# Fast polling for testing
+poll_interval = "2s"
+
+# Small batches for testing
+batch_size = 100
+
+# Cursor storage
+cursor_dir = "/var/lib/otel-journal-gatewayd-forwarder"
+
+# Collect from local gatewayd
+[[sources]]
+name = "e2e-test-host"
+url = "http://127.0.0.1:19531"
+labels = { environment = "e2e-test", test_run = "true" }
+
