@@ -5,24 +5,34 @@
 # - OpenTelemetry Collector (real OTLP receiver -> file)
 # - The forwarder binary
 #
+# Build with:
+#   podman build -f e2e/Containerfile --build-arg DISTRO=fedora -t e2e-fedora .
+#   podman build -f e2e/Containerfile --build-arg DISTRO=al2023 -t e2e-al2023 .
+#   podman build -f e2e/Containerfile --build-arg DISTRO=debian -t e2e-debian .
+#
 # Run with: podman run --rm --privileged <image>
 
-FROM registry.fedoraproject.org/fedora:41
+ARG DISTRO=fedora
 
-# Install dependencies
-RUN dnf install -y \
-    systemd \
-    systemd-journal-remote \
-    rust \
-    cargo \
-    openssl-devel \
-    procps-ng \
-    curl \
-    jq \
-    && dnf clean all
+# Base images for each distro
+FROM registry.fedoraproject.org/fedora:41 AS base-fedora
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023 AS base-al2023
+FROM docker.io/library/debian:bookworm AS base-debian
+
+# Select the appropriate base image
+FROM base-${DISTRO} AS builder
+
+ARG DISTRO
+ARG OTEL_VERSION=0.115.0
+
+# Add rustup's cargo to PATH (for distros that use rustup like Debian)
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Copy and run distro-specific install script
+COPY e2e/distros/${DISTRO}.sh /tmp/install-deps.sh
+RUN chmod +x /tmp/install-deps.sh && /tmp/install-deps.sh
 
 # Install OpenTelemetry Collector
-ARG OTEL_VERSION=0.115.0
 RUN curl -fsSL "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}/otelcol_${OTEL_VERSION}_linux_amd64.tar.gz" \
     | tar -xz -C /usr/local/bin otelcol
 
@@ -41,24 +51,21 @@ RUN cargo build --release && \
     cargo clean
 
 # Copy e2e test files
-COPY e2e/ /app/e2e/
+COPY e2e/*.sh e2e/*.toml e2e/*.yaml e2e/*.service /app/e2e/
 RUN chmod +x /app/e2e/*.sh
 
 # Configure systemd-journal-gatewayd to listen on port 19531
 RUN mkdir -p /etc/systemd/system/systemd-journal-gatewayd.socket.d && \
     printf '[Socket]\nListenStream=\nListenStream=19531\n' > /etc/systemd/system/systemd-journal-gatewayd.socket.d/override.conf
 
-# Install and enable services
-COPY e2e/test-log-generator.service /etc/systemd/system/
-COPY e2e/otel-collector.service /etc/systemd/system/
-COPY e2e/e2e-test.service /etc/systemd/system/
+# Install systemd services
+RUN cp /app/e2e/test-log-generator.service /etc/systemd/system/ && \
+    cp /app/e2e/otel-collector.service /etc/systemd/system/ && \
+    cp /app/e2e/e2e-test.service /etc/systemd/system/
 
 # Enable services (but NOT e2e-test - that runs via podman exec)
 RUN systemctl enable systemd-journal-gatewayd.socket && \
     systemctl enable test-log-generator.service && \
     systemctl enable otel-collector.service
-
-# The test runs automatically via systemd
-# Container exits when e2e-test.service completes
 
 CMD ["/sbin/init"]
