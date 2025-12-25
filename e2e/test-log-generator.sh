@@ -10,7 +10,7 @@ echo "[test-log-generator] Starting log generator"
 
 while true; do
     COUNTER=$((COUNTER + 1))
-    
+
     # Generate various log levels
     case $((COUNTER % 4)) in
         0)
@@ -26,7 +26,7 @@ while true; do
             echo "[test-log-generator] ERROR: Test message #${COUNTER} - simulated error" >&2
             ;;
     esac
-    
+
     sleep 1
 done
 

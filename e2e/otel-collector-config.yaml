@@ -18,4 +18,3 @@ service:
     logs:
       receivers: [otlp]
       exporters: [file, debug]
-

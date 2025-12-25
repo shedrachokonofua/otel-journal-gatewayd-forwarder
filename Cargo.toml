@@ -5,7 +5,7 @@ edition = "2021"
 authors = ["Your Name <you@example.com>"]
 description = "Pull-based journal log forwarder. Collects logs from remote systemd-journal-gatewayd endpoints and forwards them to an OTLP-compatible backend."
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/yourname/otel-journal-gatewayd-forwarder"
+repository = "https://github.com/shedrachokonofua/otel-journal-gatewayd-forwarder"
 keywords = ["systemd", "journal", "otlp", "opentelemetry", "logging"]
 categories = ["command-line-utilities", "development-tools"]
 
