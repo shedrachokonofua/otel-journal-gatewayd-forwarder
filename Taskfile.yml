@@ -5,7 +5,7 @@ version: "3"
 vars:
   BINARY_NAME: otel-journal-gatewayd-forwarder
   E2E_IMAGE: otel-journal-e2e-test
-  E2E_RESULTS: /tmp/otel-journal-e2e-results
+  E2E_RESULTS: .e2e-results
 
 tasks:
   default:
