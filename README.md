@@ -172,6 +172,11 @@ On invalid cursor (410 Gone), collection resets to current boot.
 ## E2E Testing
 
 The project includes an end-to-end testing suite that runs in a containerized environment.
+It is tested on the following distributions:
+
+- **Fedora 41**
+- **Debian 12 (Bookworm)**
+- **Amazon Linux 2023**
 
 ### Strategy
 
