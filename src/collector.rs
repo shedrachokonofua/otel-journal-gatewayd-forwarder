@@ -2,13 +2,13 @@
 //!
 //! Each source runs its own collector thread.
 
-use crate::config::Source;
+use crate::config::{Source, TlsConfig};
 use crate::cursor::CursorManager;
 use crate::journal::{JournalClient, JournalError};
 use crate::metrics::MetricsState;
 use crate::otlp::{OtlpClient, OtlpError};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 use tracing::{debug, error, info, warn};
@@ -37,12 +37,21 @@ impl Collector {
     /// Create a new collector for a source
     pub fn new(
         source: Source,
+        global_tls: &Option<TlsConfig>,
         otlp: Arc<OtlpClient>,
         cursor: CursorManager,
         batch_size: usize,
+        max_field_bytes: usize,
         metrics: Option<Arc<MetricsState>>,
     ) -> Result<Self, CollectorError> {
-        let journal = JournalClient::new(&source.url, source.units.clone())?;
+        let tls = source.effective_tls(global_tls);
+        let journal = JournalClient::new(
+            &source.url,
+            source.units.clone(),
+            tls.as_ref(),
+            &source.headers,
+            max_field_bytes,
+        )?;
 
         Ok(Self {
             source,
@@ -92,6 +101,7 @@ impl Collector {
                         JournalError::Json(_) => "parse",
                         JournalError::ServerError { .. } => "server",
                         JournalError::InvalidCursor => "invalid_cursor",
+                        JournalError::Config(_) => "config",
                     };
                     metrics.record_error(&self.source.name, error_type);
                 }
@@ -127,9 +137,11 @@ impl Collector {
                     self.cursor.save(&cursor)?;
                 }
 
+                let last_entry_realtime = entries.last().map(|e| e.realtime_timestamp);
                 if let Some(metrics) = &self.metrics {
                     metrics.record_forwarded(&self.source.name, count as u64);
                     metrics.record_poll(&self.source.name, start.elapsed());
+                    metrics.record_last_entry(&self.source.name, last_entry_realtime);
                 }
 
                 info!(
@@ -164,41 +176,61 @@ impl Collector {
     }
 }
 
-/// Run collector in a loop until shutdown signal
+const MAX_DRAIN_BATCHES: u32 = 100;
+const MAX_BACKOFF: Duration = Duration::from_secs(300);
+
+/// Compute the next sleep duration after `consecutive_failures` failures.
+fn backoff_delay(base: Duration, failures: u32) -> Duration {
+    if failures == 0 {
+        return base;
+    }
+    let factor = 2u32.saturating_pow(failures.min(8));
+    base.saturating_mul(factor).min(MAX_BACKOFF)
+}
+
+/// Run collector in a loop until shutdown signal.
 pub fn run_loop(
     mut collector: Collector,
     poll_interval: Duration,
     shutdown: Arc<AtomicBool>,
     once: bool,
+    tick: Arc<AtomicU64>,
 ) {
     let source_name = collector.source_name().to_string();
     info!(source = %source_name, "Collector started");
 
+    let mut consecutive_failures: u32 = 0;
+
     loop {
-        // Check shutdown flag
         if shutdown.load(Ordering::Relaxed) {
             info!(source = %source_name, "Collector shutting down");
             break;
         }
 
-        // Poll
-        match collector.poll() {
-            Ok(count) => {
-                debug!(source = %source_name, count = count, "Poll completed");
+        match drain_cycle(&mut collector, MAX_DRAIN_BATCHES, shutdown.clone()) {
+            Ok(0) => {
+                consecutive_failures = 0;
+                debug!(source = %source_name, "No new entries");
+            }
+            Ok(n) => {
+                consecutive_failures = 0;
+                debug!(source = %source_name, count = n, "Drain cycle completed");
             }
             Err(e) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
                 warn!(source = %source_name, error = %e, "Poll failed, will retry");
             }
         }
 
-        // Exit if --once mode
+        tick.store(current_unix_ms(), Ordering::Relaxed);
+
         if once {
             debug!(source = %source_name, "Once mode, exiting");
             break;
         }
 
-        // Wait for next poll interval (check shutdown every 100ms)
-        let mut remaining = poll_interval;
+        let delay = backoff_delay(poll_interval, consecutive_failures);
+        let mut remaining = delay;
         while remaining > Duration::ZERO && !shutdown.load(Ordering::Relaxed) {
             let sleep = remaining.min(Duration::from_millis(100));
             std::thread::sleep(sleep);
@@ -207,8 +239,61 @@ pub fn run_loop(
     }
 }
 
+fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
+
+/// Fetch and forward up to `max_batches` in one cycle, stopping early if a batch
+/// is short (likely caught up) or if shutdown is requested.
+fn drain_cycle(
+    collector: &mut Collector,
+    max_batches: u32,
+    shutdown: Arc<AtomicBool>,
+) -> Result<usize, CollectorError> {
+    let mut total = 0usize;
+    for i in 0..max_batches {
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        let count = collector.poll()?;
+        total += count;
+        if count == 0 || count < collector.batch_size {
+            // Short batch means we're caught up (or empty); don't burn cycles.
+            break;
+        }
+        // If we returned a full batch, there may be more; keep draining.
+        debug!(
+            batch = i + 1,
+            count = count,
+            "Fetched full batch, continuing drain"
+        );
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
-    // Integration tests would require mocking the HTTP endpoints
-    // Use wiremock for proper testing when available
+    use super::*;
+
+    #[test]
+    fn test_backoff_delay() {
+        let base = Duration::from_secs(5);
+        assert_eq!(backoff_delay(base, 0), base);
+        assert_eq!(backoff_delay(base, 1), Duration::from_secs(10));
+        assert_eq!(backoff_delay(base, 2), Duration::from_secs(20));
+        assert_eq!(
+            backoff_delay(base, 8),
+            Duration::from_secs(300).min(Duration::from_secs(1280))
+        );
+        assert_eq!(backoff_delay(base, 100), Duration::from_secs(300));
+    }
+
+    #[test]
+    fn test_backoff_delay_min() {
+        let base = Duration::from_millis(100);
+        assert_eq!(backoff_delay(base, 1), Duration::from_millis(200));
+    }
 }
