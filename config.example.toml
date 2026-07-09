@@ -14,9 +14,24 @@ poll_interval = "5s"
 # Default: 500
 batch_size = 500
 
-# Directory to store cursor files for crash-safe resume
-# Default: /var/lib/otel-journal-gatewayd-forwarder
+# Maximum bytes retained for each non-core journal field. Longer values are
+# truncated with a "…[truncated]" marker. Set to 0 to keep values unbounded
+# (not recommended). Default: 8192
+max_field_bytes = 8192
+
+# Directory to store cursor files for crash-safe resume.
+# Resolution order: OJGF_CURSOR_DIR env var > this field > $STATE_DIRECTORY > default.
 cursor_dir = "/var/lib/otel-journal-gatewayd-forwarder"
+
+# Global TLS defaults used for both OTLP exporter and any source that does not
+# override them. Set client_cert + client_key together to enable mTLS.
+# [tls]
+# ca_cert = "/etc/ojgf/ca.pem"
+# client_cert = "/etc/ojgf/client.pem"
+# client_key = "/etc/ojgf/client.key"
+
+# Headers added to every OTLP export request (e.g. Authorization).
+# otlp_headers = { Authorization = "Bearer <token>" }
 
 # Sources to collect from
 # Each source is a systemd-journal-gatewayd endpoint
@@ -37,10 +52,16 @@ url = "https://host-03.internal:19531"
 # Optional: custom labels added to all logs from this source
 labels = { datacenter = "us-east-1", role = "gateway" }
 
+# Optional: headers added to gatewayd requests for this source (e.g. basic auth).
+# headers = { Authorization = "Basic <base64>" }
+
+# Optional: source-specific TLS config. If set, it replaces the global [tls]
+# for this source (it is not merged).
+# tls = { ca_cert = "/etc/ojgf/host-03-ca.pem" }
+
 # Example with all options
 # [[sources]]
 # name = "production-web-01"
 # url = "http://10.0.0.1:19531"
 # units = ["nginx.service", "myapp.service"]
 # labels = { environment = "production", team = "web", region = "us-west-2" }
-

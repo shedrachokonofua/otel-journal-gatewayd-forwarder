@@ -22,11 +22,11 @@ cargo build --release
 sudo cp target/release/otel-journal-gatewayd-forwarder /usr/local/bin/
 ```
 
-For static builds:
+For static builds (the same path used in CI):
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
-cargo build --release --target x86_64-unknown-linux-musl
+docker run --rm -v "$PWD:/src" -w /src messense/rust-musl-cross:x86_64-musl \
+  bash -c 'rustup target add x86_64-unknown-linux-musl && cargo build --release --target x86_64-unknown-linux-musl'
 ```
 
 ## Configure
@@ -36,7 +36,6 @@ Copy and edit the example config:
 ```bash
 sudo mkdir -p /etc/otel-journal-gatewayd-forwarder
 sudo cp config.example.toml /etc/otel-journal-gatewayd-forwarder/config.toml
-sudo mkdir -p /var/lib/otel-journal-gatewayd-forwarder
 ```
 
 See `config.example.toml` for all options.
@@ -48,7 +47,8 @@ Environment variables override config file values:
 | `OJGF_OTLP_ENDPOINT` | OTLP HTTP endpoint              |
 | `OJGF_POLL_INTERVAL` | Poll interval (e.g. `5s`, `1m`) |
 | `OJGF_BATCH_SIZE`    | Max entries per request         |
-| `OJGF_CURSOR_DIR`    | Cursor storage directory        |
+| `OJGF_MAX_FIELD_BYTES` | Max bytes per extra journal field |
+| `OJGF_CURSOR_DIR`    | Cursor storage directory (highest precedence) |
 
 ### Configuration File
 
@@ -59,7 +59,10 @@ The configuration file (`config.toml`) uses TOML format.
 - `otlp_endpoint`: OTLP/HTTP receiver URL (required).
 - `poll_interval`: Time between collection cycles (default: `5s`).
 - `batch_size`: Max entries per request (default: `500`).
-- `cursor_dir`: Directory for cursor state (default: `/var/lib/otel-journal-gatewayd-forwarder`).
+- `max_field_bytes`: Max bytes per extra journal field; larger values are truncated (default: `8192`).
+- `cursor_dir`: Directory for cursor state. Resolution order: `OJGF_CURSOR_DIR` environment variable > this config field > `$STATE_DIRECTORY` runtime directory > compiled default `/var/lib/otel-journal-gatewayd-forwarder`.
+- `[tls]`: Global TLS defaults (`ca_cert`, `client_cert`, `client_key`). Per-source `tls` replaces this block entirely.
+- `otlp_headers`: Extra headers added to every OTLP export request.
 
 **Sources:**
 Define one or more `[[sources]]` blocks:
@@ -68,6 +71,8 @@ Define one or more `[[sources]]` blocks:
 - `url`: `systemd-journal-gatewayd` endpoint URL.
 - `units`: (Optional) List of systemd units to collect.
 - `labels`: (Optional) Custom resource attributes.
+- `headers`: (Optional) Extra headers for gatewayd requests (e.g. auth).
+- `tls`: (Optional) Source-specific TLS config; replaces the global `[tls]` block for this source.
 
 ## Run
 
@@ -98,16 +103,33 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/local/bin/otel-journal-gatewayd-forwarder -c /etc/otel-journal-gatewayd-forwarder/config.toml
 Restart=always
 RestartSec=5
+DynamicUser=yes
+
+# State directory for cursor persistence (sets $STATE_DIRECTORY).
+StateDirectory=otel-journal-gatewayd-forwarder
+StateDirectoryMode=0750
 
 # Hardening
 NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/var/lib/otel-journal-gatewayd-forwarder
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictRealtime=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Resource limits
+WatchdogSec=90s
+TimeoutStartSec=60s
 
 [Install]
 WantedBy=multi-user.target
@@ -140,6 +162,16 @@ sudo systemctl enable --now systemd-journal-gatewayd.socket
 
 Default port: 19531
 
+## Security
+
+`systemd-journal-gatewayd` serves **full journal contents** unauthenticated by default. Never expose port `19531` to untrusted networks without one of the following protections:
+
+1. **Network-layer restriction**: firewall `19531/tcp` so only the forwarder host can reach it.
+2. **Native mTLS**: run gatewayd with `--cert=`, `--key=`, and `--trust=` (systemd ≥236) and configure the forwarder `[tls]` / per-source `tls` block with matching client certificates.
+3. **Reverse proxy**: front gatewayd with Caddy/NGINX terminating TLS and add per-source `headers` (e.g. basic auth) — simpler than mTLS, but trust the proxy-to-gatewayd hop.
+
+The forwarder also supports arbitrary `headers` per source and `otlp_headers` globally for the OTLP exporter. See `config.example.toml`.
+
 ## OTLP output
 
 Logs are sent to `{otlp_endpoint}/v1/logs` as OTLP/HTTP JSON.
@@ -167,7 +199,7 @@ Logs are sent to `{otlp_endpoint}/v1/logs` as OTLP/HTTP JSON.
 
 Cursors are stored as `{cursor_dir}/{source_name}.cursor`. Updated atomically after successful OTLP push.
 
-On invalid cursor (410 Gone), collection resets to current boot.
+On invalid cursor (410 Gone), collection resets to the **current boot**, which re-ingests that boot into the OTLP backend. Plan for brief duplicate log records after a 410; keep adequate journald retention on sources so the forwarder can resume.
 
 ## E2E Testing
 
