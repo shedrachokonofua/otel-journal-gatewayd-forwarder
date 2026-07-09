@@ -13,11 +13,15 @@ mod otlp;
 use clap::Parser;
 use config::{Cli, Config};
 use std::process::ExitCode;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
+use std::time::Duration;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+#[cfg(unix)]
+use sd_notify::NotifyState;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -95,8 +99,7 @@ fn run(config: Config, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = Arc::new(AtomicBool::new(false));
 
     // Setup signal handlers
-    let shutdown_clone = shutdown.clone();
-    ctrlc_setup(shutdown_clone);
+    setup_signals(shutdown.clone())?;
 
     // Setup metrics if enabled
     let metrics = if let Some(ref addr) = cli.metrics {
@@ -108,74 +111,150 @@ fn run(config: Config, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // Create shared OTLP client
-    let otlp = Arc::new(otlp::OtlpClient::new(&config.otlp_endpoint)?);
+    let otlp = Arc::new(otlp::OtlpClient::new(
+        &config.otlp_endpoint,
+        config.tls.as_ref(),
+        &config.otlp_headers,
+    )?);
 
-    // Start collector threads
-    let mut handles = Vec::new();
+    // Start collector threads, each with a freshness tick
+    let mut source_states = Vec::new();
 
     for source in config.sources {
         let cursor = cursor::CursorManager::new(&config.cursor_dir, &source.name)?;
         let collector = collector::Collector::new(
             source,
+            &config.tls,
             otlp.clone(),
             cursor,
             config.batch_size,
+            config.max_field_bytes,
             metrics.clone(),
         )?;
 
         let shutdown = shutdown.clone();
         let poll_interval = config.poll_interval;
         let once = cli.once;
+        let tick = Arc::new(AtomicU64::new(current_unix_ms()));
+        let thread_tick = tick.clone();
+        let source_name = collector.source_name().to_string();
 
         let handle = thread::spawn(move || {
-            collector::run_loop(collector, poll_interval, shutdown, once);
+            collector::run_loop(collector, poll_interval, shutdown, once, thread_tick);
         });
 
-        handles.push(handle);
+        source_states.push((source_name, poll_interval, tick, handle));
     }
 
-    // Wait for all collectors to finish
-    for handle in handles {
-        if let Err(e) = handle.join() {
-            warn!("Collector thread panicked: {:?}", e);
+    // Notify systemd that the service is ready now that all collectors are spawned.
+    #[cfg(unix)]
+    {
+        if let Err(e) = sd_notify::notify(false, &[NotifyState::Ready]) {
+            warn!(error = %e, "Failed to send systemd ready notification");
+        } else {
+            info!("Sent systemd ready notification");
         }
+    }
+
+    // Wait for all collectors to finish, optionally pinging the systemd watchdog.
+    #[cfg(unix)]
+    {
+        let mut usec = 0u64;
+        let enabled = sd_notify::watchdog_enabled(false, &mut usec);
+        if enabled {
+            let timeout = Duration::from_micros(usec);
+            info!(timeout_ms = timeout.as_millis(), "systemd watchdog enabled");
+            wait_with_watchdog(source_states, shutdown.clone(), timeout)?;
+        } else {
+            info!("systemd watchdog not enabled; joining collectors directly");
+            join_collectors(source_states)?;
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        join_collectors(source_states)?;
     }
 
     info!("All collectors stopped, exiting");
     Ok(())
 }
 
-/// Setup Ctrl+C handler for graceful shutdown
-fn ctrlc_setup(shutdown: Arc<AtomicBool>) {
-    // Register signal handler using libc
-    #[cfg(unix)]
-    {
-        // Store shutdown flag in global static for signal handler
-        SHUTDOWN_FLAG
-            .set(shutdown)
-            .expect("Shutdown flag already set");
+/// Wait for collectors to finish while periodically pinging the systemd
+/// watchdog as long as every source has ticked within its own freshness window.
+#[cfg(unix)]
+fn wait_with_watchdog(
+    source_states: Vec<(String, Duration, Arc<AtomicU64>, thread::JoinHandle<()>)>,
+    shutdown: Arc<AtomicBool>,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let ping_interval = timeout / 2;
+    let now = current_unix_ms;
 
-        // Register signal handlers
-        unsafe {
-            libc::signal(libc::SIGINT, handle_signal as libc::sighandler_t);
-            libc::signal(libc::SIGTERM, handle_signal as libc::sighandler_t);
+    loop {
+        // Ping only while every source still appears alive.
+        let all_fresh = source_states.iter().all(|(_, poll_interval, tick, _)| {
+            let window = poll_interval.saturating_mul(5).max(Duration::from_secs(60));
+            now().saturating_sub(tick.load(Ordering::Relaxed)) <= window.as_millis() as u64
+        });
+
+        if all_fresh {
+            if let Err(e) = sd_notify::notify(false, &[NotifyState::Watchdog]) {
+                warn!(error = %e, "Failed to send systemd watchdog notification");
+            }
+        } else {
+            warn!("Skipping systemd watchdog ping: one or more sources appear stale");
         }
-    }
 
-    #[cfg(not(unix))]
-    {
-        // On non-Unix platforms, just drop the shutdown flag
-        // Graceful shutdown won't work but the program will still run
-        let _ = shutdown;
+        // Sleep in short slices so we can detect finished threads promptly.
+        let mut remaining = ping_interval;
+        while remaining > Duration::ZERO && !shutdown.load(Ordering::Relaxed) {
+            let slice = remaining.min(Duration::from_millis(100));
+            thread::sleep(slice);
+            remaining = remaining.saturating_sub(slice);
+
+            // If any thread finished (e.g. --once), switch to a plain join.
+            if source_states
+                .iter()
+                .any(|(_, _, _, handle)| handle.is_finished())
+            {
+                return join_collectors(source_states);
+            }
+        }
+
+        if shutdown.load(Ordering::Relaxed) {
+            return join_collectors(source_states);
+        }
     }
 }
 
-#[cfg(unix)]
-static SHUTDOWN_FLAG: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
+/// Join all collector threads and surface any panics.
+fn join_collectors(
+    source_states: Vec<(String, Duration, Arc<AtomicU64>, thread::JoinHandle<()>)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (source_name, _, _, handle) in source_states {
+        if let Err(e) = handle.join() {
+            warn!(source = %source_name, panic = ?e, "Collector thread panicked");
+        }
+    }
+    Ok(())
+}
+
+fn current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
+}
 
 #[cfg(unix)]
-extern "C" fn handle_signal(_: libc::c_int) {
-    if let Some(flag) = SHUTDOWN_FLAG.get() {
-        flag.store(true, Ordering::Relaxed);
-    }
+fn setup_signals(shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, shutdown.clone())?;
+    signal_hook::flag::register(signal_hook::consts::SIGINT, shutdown.clone())?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn setup_signals(_shutdown: Arc<AtomicBool>) -> Result<(), Box<dyn std::error::Error>> {
+    Ok(())
 }
