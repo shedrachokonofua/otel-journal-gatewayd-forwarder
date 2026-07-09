@@ -1,11 +1,11 @@
 # Implementation Plan
 
-Ordered work items for otel-journal-gatewayd-forwarder. Phase 1 fixes **verified production-blocking bugs** (empirically confirmed 2026-07-09 against systemd 252 / Debian bookworm gatewayd; exact code below is proven working — transcribe it, do not redesign it). Later phases are improvements. Work strictly in phase order; each item is independently committable.
+This document records the implementation plan for `otel-journal-gatewayd-forwarder`. The work described here has already been implemented in the commits preceding this document on `main` (edition 2024, Rust 1.96.1, Range-header cursor transport, TLS/headers, drain/backoff, watchdog/metrics, and the continuation E2E/CI). It is retained as a design record and verification checklist; do not treat it as a fresh set of commits to apply.
 
 ## Global constraints
 
 - **No architecture changes.** Keep: blocking reqwest, thread-per-source, module layout (`collector.rs`, `config.rs`, `cursor.rs`, `journal.rs`, `metrics.rs`, `otlp.rs`). No async rewrite, no gRPC/protobuf OTLP, no `?follow` streaming.
-- Rust edition 2021 (until item 2.2 migrates to 2024). Never use openssl-linked crates — musl static builds must keep working.
+- Rust edition 2024, pinned to Rust 1.96.1. Never use openssl-linked crates — musl static builds must keep working.
 - After every item: `cargo fmt && cargo test`. Both must be clean before moving on. Once item 2.4 lands, `cargo clippy --all-targets -- -D warnings` joins that gate.
 - No new files unless an item says so. No README rewrites beyond sections an item names.
 - Conventional commits, one commit per item: `fix: …`, `feat: …`, `test: …`, `docs: …`.
@@ -19,7 +19,7 @@ docker run --rm -v "$PWD:/src" -w /src rust:1.96.1-bookworm cargo test
 docker run --rm -v "$PWD:/src" -w /src rust:1.96.1-bookworm cargo fmt --check
 ```
 
-Baseline on clean `main`: 11 unit tests pass, 3 compiler warnings.
+Baseline on the parent commit of this plan: all existing unit tests pass, zero compiler warnings, `cargo clippy --all-targets -- -D warnings` clean, and `cargo audit` clean.
 
 E2E (Phase 1.4) also runs in `rust:1.96.1-bookworm` — it has apt access to `systemd`, `systemd-journal-remote` (which ships both `systemd-journal-remote` and `systemd-journal-gatewayd` on Debian).
 
@@ -233,12 +233,12 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 New TOML surface (global `[tls]` is the default; a source-level `tls` table overrides whole-sale; all fields optional):
 
 ```toml
+otlp_headers = { Authorization = "Bearer …" }  # global, OTLP leg
+
 [tls]
 ca_cert = "/etc/ojgf/ca.pem"          # extra root CA (PEM)
 client_cert = "/etc/ojgf/client.pem"  # mTLS client cert (PEM)
 client_key = "/etc/ojgf/client.key"   # mTLS client key (PEM)
-
-otlp_headers = { Authorization = "Bearer …" }  # global, OTLP leg
 
 [[sources]]
 name = "public-gateway"
@@ -281,9 +281,9 @@ Document: gatewayd serves full journal contents unauthenticated by default; fire
 
 `poll()` currently fetches one batch per cycle → max throughput `batch_size/poll_interval` (default 100/s). A day of backlog on a chatty host takes hours.
 
-Change `run_loop` cycle to: call `poll()` repeatedly **within one cycle** while it returns `Ok(n) where n == batch_size` (i.e. probably more pending), up to a safety cap `max_drain_batches = 100` per cycle, checking `shutdown` between iterations. Sleep only after draining. `--once` mode: drain fully, then exit.
+Change `run_loop` cycle to: call `poll()` repeatedly **within one cycle** while it returns `Ok(n) where n == batch_size` (i.e. probably more pending), up to a safety cap `max_drain_batches = 100` per cycle, checking `shutdown` between iterations. Sleep only after draining. `--once` mode: repeat drain cycles (without sleeping) until a batch is short, i.e. the source is caught up, then exit. Do not let the per-cycle cap leave data behind in once mode.
 
-**Acceptance:** unit-level: not practical — cover via e2e: with 240 pending entries and `poll_interval = "30s"`, a single cycle drains everything (watch sink request count within ~5s).
+**Acceptance:** unit-level: not practical — cover via e2e: with 240 pending entries and `poll_interval = "30s"`, a single cycle drains everything (watch sink request count within ~5s). Add a once-mode case with >100 batches pending and verify the source drains fully before exiting.
 
 ### 4.2 `feat`: exponential backoff on consecutive failures
 
