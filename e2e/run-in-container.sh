@@ -1,5 +1,5 @@
 #!/bin/bash
-# Runs the e2e test inside a container with systemd
+# Runs the e2e test inside a container with systemd.
 set -euo pipefail
 
 IMAGE="${1:-otel-journal-e2e-test}"
@@ -7,14 +7,28 @@ RESULTS_DIR="${2:-/tmp/otel-journal-e2e-results}"
 
 rm -rf "$RESULTS_DIR" && mkdir -p "$RESULTS_DIR"
 
+# Prefer podman, fall back to docker.
+CONTAINER_RT="${CONTAINER_RT:-}"
+if [ -z "$CONTAINER_RT" ]; then
+  if command -v podman >/dev/null 2>&1; then
+    CONTAINER_RT=podman
+  elif command -v docker >/dev/null 2>&1; then
+    CONTAINER_RT=docker
+  else
+    echo "ERROR: neither podman nor docker is available" >&2
+    exit 1
+  fi
+fi
+echo "Using container runner: $CONTAINER_RT"
+
 # Start container with systemd in background
-CONTAINER_ID=$(podman run -d --rm --privileged \
+CONTAINER_ID=$($CONTAINER_RT run -d --rm --privileged \
   -v "$RESULTS_DIR":/test-results:Z \
   "$IMAGE")
 echo "Container started: $CONTAINER_ID"
 
 cleanup() {
-  podman stop -t 2 "$CONTAINER_ID" 2>/dev/null || true
+  $CONTAINER_RT stop -t 2 "$CONTAINER_ID" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -24,7 +38,7 @@ sleep 5
 
 # Run the test (output goes to stdout)
 echo ""
-podman exec -it "$CONTAINER_ID" /app/e2e/run-e2e-test.sh
+$CONTAINER_RT exec "$CONTAINER_ID" /app/e2e/run-e2e-test.sh
 TEST_EXIT=$?
 
 # Report results
@@ -40,4 +54,3 @@ else
 fi
 
 exit $TEST_EXIT
-
