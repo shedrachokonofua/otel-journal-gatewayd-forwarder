@@ -132,9 +132,10 @@ mod tests {
     fn test_cursor_sanitizes_name() {
         let dir = TempDir::new().unwrap();
         let cm = CursorManager::new(dir.path(), "host/with:special<chars>").unwrap();
-        assert!(cm
-            .cursor_path
-            .to_string_lossy()
-            .contains("host_with_special_chars_"));
+        assert!(
+            cm.cursor_path
+                .to_string_lossy()
+                .contains("host_with_special_chars_")
+        );
     }
 }
