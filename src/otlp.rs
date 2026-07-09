@@ -4,8 +4,8 @@
 //! Endpoint: `{otlp_endpoint}/v1/logs`
 
 use crate::journal::JournalEntry;
-use reqwest::blocking::Client;
 use reqwest::StatusCode;
+use reqwest::blocking::Client;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
@@ -21,6 +21,8 @@ pub enum OtlpError {
     Http(#[from] reqwest::Error),
     #[error("Server rejected request: {status} - {body}")]
     ServerError { status: StatusCode, body: String },
+    #[error("Configuration error: {0}")]
+    Config(String),
 }
 
 /// OTLP client for sending logs
@@ -31,8 +33,13 @@ pub struct OtlpClient {
 
 impl OtlpClient {
     /// Create a new OTLP client
-    pub fn new(endpoint: &str) -> Result<Self, OtlpError> {
-        let client = Client::builder().timeout(REQUEST_TIMEOUT).build()?;
+    pub fn new(
+        endpoint: &str,
+        tls: Option<&crate::config::TlsConfig>,
+        headers: &HashMap<String, String>,
+    ) -> Result<Self, OtlpError> {
+        let client = crate::config::build_http_client(tls, headers, REQUEST_TIMEOUT)
+            .map_err(|e| OtlpError::Config(e.to_string()))?;
 
         // Normalize endpoint
         let endpoint = endpoint.trim_end_matches('/').to_string();
@@ -299,6 +306,26 @@ fn build_log_record(entry: &JournalEntry) -> LogRecord {
         });
     }
 
+    if let Some(ref unit) = entry.systemd_unit {
+        attributes.push(KeyValue {
+            key: "journald.unit.name".to_string(),
+            value: AttributeValue {
+                string_value: Some(unit.clone()),
+                int_value: None,
+            },
+        });
+    }
+
+    if let Some(priority) = entry.priority {
+        attributes.push(KeyValue {
+            key: "journald.priority.number".to_string(),
+            value: AttributeValue {
+                string_value: None,
+                int_value: Some(priority.to_string()),
+            },
+        });
+    }
+
     // Add journal cursor as attribute (useful for debugging)
     attributes.push(KeyValue {
         key: "systemd.cursor".to_string(),
@@ -404,5 +431,22 @@ mod tests {
         assert_eq!(record.body.string_value, "Test message");
         assert_eq!(record.severity_number, 9);
         assert_eq!(record.severity_text, "INFO");
+
+        let unit_attr = record
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "journald.unit.name")
+            .expect("journald.unit.name attribute missing");
+        assert_eq!(
+            unit_attr.value.string_value,
+            Some("test.service".to_string())
+        );
+
+        let priority_attr = record
+            .attributes
+            .iter()
+            .find(|kv| kv.key == "journald.priority.number")
+            .expect("journald.priority.number attribute missing");
+        assert_eq!(priority_attr.value.int_value, Some("6".to_string()));
     }
 }
