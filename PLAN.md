@@ -138,9 +138,9 @@ Expected: phase 1 = exactly 12 push cycles then silent idle polls; phase 2 = exa
 
 **Acceptance:** script passes locally in `rust:1.96.1-bookworm`; fails when run against unpatched `main` (spot-check once to prove the test works).
 
-### 1.5 `chore`: fix the 3 existing compiler warnings
+### 1.5 `chore`: compiler warnings
 
-Run `cargo fix --bin otel-journal-gatewayd-forwarder` and review. **Acceptance:** `cargo build` emits zero warnings.
+The compiler warnings that existed on `origin/main` have already been resolved in the preceding implementation commits. Verify with `cargo build` that zero warnings remain. **Acceptance:** `cargo build` emits zero warnings.
 
 ---
 

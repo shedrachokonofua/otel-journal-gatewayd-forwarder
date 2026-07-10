@@ -189,6 +189,9 @@ fn backoff_delay(base: Duration, failures: u32) -> Duration {
 }
 
 /// Run collector in a loop until shutdown signal.
+///
+/// In `--once` mode, drain cycles repeat without sleeping until a short batch
+/// is reached (source caught up), so the per-cycle cap never leaves data behind.
 pub fn run_loop(
     mut collector: Collector,
     poll_interval: Duration,
@@ -207,7 +210,8 @@ pub fn run_loop(
             break;
         }
 
-        match drain_cycle(&mut collector, MAX_DRAIN_BATCHES, shutdown.clone()) {
+        let result = drain_cycle(&mut collector, MAX_DRAIN_BATCHES, shutdown.clone());
+        match &result {
             Ok(0) => {
                 consecutive_failures = 0;
                 debug!(source = %source_name, "No new entries");
@@ -225,8 +229,21 @@ pub fn run_loop(
         tick.store(current_unix_ms(), Ordering::Relaxed);
 
         if once {
-            debug!(source = %source_name, "Once mode, exiting");
-            break;
+            match &result {
+                Ok(n) if *n > 0 && !shutdown.load(Ordering::Relaxed) => {
+                    // The per-cycle cap may leave data behind; keep draining.
+                    debug!(
+                        source = %source_name,
+                        count = n,
+                        "Once mode: drain cycle hit cap, continuing"
+                    );
+                    continue;
+                }
+                _ => {
+                    debug!(source = %source_name, "Once mode, exiting");
+                    break;
+                }
+            }
         }
 
         let delay = backoff_delay(poll_interval, consecutive_failures);
