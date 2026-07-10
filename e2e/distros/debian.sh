@@ -15,6 +15,7 @@ apt-get update && apt-get install -y \
     jq \
     ca-certificates \
     build-essential \
+    python3 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

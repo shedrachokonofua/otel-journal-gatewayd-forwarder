@@ -138,31 +138,6 @@ e2e:debian:
   variables:
     DISTRO: debian
 
-e2e:continuation:
-  stage: e2e
-  image: rust:1.96.1-bookworm
-  tags:
-    - docker
-  variables:
-    CARGO_HOME: $CI_PROJECT_DIR/.cargo
-    RUSTFLAGS: "-D warnings"
-  cache:
-    key: ${CI_COMMIT_REF_SLUG}-continuation
-    paths:
-      - .cargo/
-      - target/
-  script:
-    - bash e2e/continuation-test.sh
-  artifacts:
-    when: always
-    paths:
-      - /test-results/
-    expire_in: 7 days
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-    - if: $CI_COMMIT_TAG
-
 # =============================================================================
 # BUILD STAGE
 # =============================================================================
@@ -299,48 +274,20 @@ upload:github:
       echo "Creating GitHub release ${VERSION}..."
 
       # Create release
-      RELEASE_RESPONSE=$(curl -s -X POST \
+      RELEASE_RESPONSE=$(curl -sf -X POST \
         -H "Authorization: token ${GITHUB_TOKEN}" \
-        -H "Accept: application/vnd.github.v3+json" \
+        -H "Accept: application/vnd.github+json" \
         "https://api.github.com/repos/${GITHUB_REPO}/releases" \
-        -d "{
-          \"tag_name\": \"${VERSION}\",
-          \"name\": \"Release ${VERSION}\",
-          \"body\": \"## Release ${VERSION}\\n\\nSee CHANGELOG.md for details.\",
-          \"draft\": false,
-          \"prerelease\": false
-        }")
+        -d "{\"tag_name\":\"${VERSION}\",\"name\":\"Release ${VERSION}\",\"body\":\"## Release ${VERSION}\\n\\n### Downloads\\n- Linux AMD64\",\"prerelease\":false}")
 
-      UPLOAD_URL=$(echo "${RELEASE_RESPONSE}" | jq -r '.upload_url' | sed 's/{.*}//')
-      RELEASE_ID=$(echo "${RELEASE_RESPONSE}" | jq -r '.id')
+      RELEASE_ID=$(echo "$RELEASE_RESPONSE" | jq .id)
 
-      if [ "${RELEASE_ID}" = "null" ] || [ -z "${RELEASE_ID}" ]; then
-        echo "Failed to create GitHub release:"
-        echo "${RELEASE_RESPONSE}"
-
-        # Try to get existing release
-        echo "Attempting to get existing release..."
-        RELEASE_RESPONSE=$(curl -s \
-          -H "Authorization: token ${GITHUB_TOKEN}" \
-          -H "Accept: application/vnd.github.v3+json" \
-          "https://api.github.com/repos/${GITHUB_REPO}/releases/tags/${VERSION}")
-
-        UPLOAD_URL=$(echo "${RELEASE_RESPONSE}" | jq -r '.upload_url' | sed 's/{.*}//')
-        RELEASE_ID=$(echo "${RELEASE_RESPONSE}" | jq -r '.id')
-
-        if [ "${RELEASE_ID}" = "null" ] || [ -z "${RELEASE_ID}" ]; then
-          echo "Could not find or create release"
-          exit 1
-        fi
-      fi
-
-      echo "Uploading binary to release ${RELEASE_ID}..."
-
-      curl -s -X POST \
+      # Upload binary as release asset
+      curl -sf -X POST \
         -H "Authorization: token ${GITHUB_TOKEN}" \
         -H "Content-Type: application/octet-stream" \
-        "${UPLOAD_URL}?name=${BINARY_NAME}-linux-amd64" \
-        --data-binary "@target/release/${BINARY_NAME}"
+        --upload-file "target/release/${BINARY_NAME}" \
+        "https://uploads.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}/assets?name=${BINARY_NAME}-linux-amd64"
 
       echo "GitHub release created successfully!"
   rules:

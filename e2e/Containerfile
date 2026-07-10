@@ -51,7 +51,7 @@ RUN cargo build --release && \
     cargo clean
 
 # Copy e2e test files
-COPY e2e/*.sh e2e/*.toml e2e/*.yaml e2e/*.service /app/e2e/
+COPY e2e/*.sh e2e/*.toml e2e/*.yaml e2e/*.service e2e/*.py /app/e2e/
 RUN chmod +x /app/e2e/*.sh
 
 # Configure systemd-journal-gatewayd to listen on port 19531

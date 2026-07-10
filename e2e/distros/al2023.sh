@@ -15,4 +15,5 @@ dnf install -y --allowerasing \
     jq \
     tar \
     gzip \
+    python3 \
     && dnf clean all

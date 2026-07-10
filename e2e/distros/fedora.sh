@@ -11,5 +11,6 @@ dnf install -y \
     procps-ng \
     curl \
     jq \
+    python3 \
     && dnf clean all
 
