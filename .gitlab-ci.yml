@@ -174,9 +174,23 @@ build:release:
     - |
       echo "Static linkage check:"
       file target/release/${BINARY_NAME} | grep -qE 'static|static-pie'
-      # ldd exits nonzero for fully static binaries; capture both streams.
-      ldd target/release/${BINARY_NAME} > /tmp/ldd.out 2>&1 || true
-      grep -qE 'not a dynamic executable' /tmp/ldd.out
+      # Fully static / static-pie binaries: ldd exits nonzero and wording varies
+      # by ldd (glibc vs musl) and link style ("not a dynamic executable",
+      # "statically linked", etc.). Accept any of those; fail only if ldd
+      # reports real shared libs.
+      set +e
+      ldd target/release/${BINARY_NAME} > /tmp/ldd.out 2>&1
+      LDD_RC=$?
+      set -e
+      cat /tmp/ldd.out
+      if grep -qE 'not a dynamic executable|statically linked' /tmp/ldd.out; then
+        echo "OK: static binary"
+      elif [ "$LDD_RC" -ne 0 ] && ! grep -qE '\.so' /tmp/ldd.out; then
+        echo "OK: ldd failed without shared libs (static-pie)"
+      else
+        echo "ERROR: binary appears dynamically linked"
+        exit 1
+      fi
   artifacts:
     paths:
       - target/release/${BINARY_NAME}
