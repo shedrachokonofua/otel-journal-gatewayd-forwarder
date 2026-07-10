@@ -22,6 +22,8 @@ apt-get update && apt-get install -y \
 # Create /sbin/init symlink for consistency with other distros
 ln -sf /lib/systemd/systemd /sbin/init
 
-# Install Rust via rustup (system rust on Debian is too old for Cargo.lock v4)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+# Install Rust via rustup pinned to crate MSRV (system rust is too old)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+  | sh -s -- -y --default-toolchain 1.96.1 --profile minimal
+# shellcheck source=/dev/null
 source "$HOME/.cargo/env"
