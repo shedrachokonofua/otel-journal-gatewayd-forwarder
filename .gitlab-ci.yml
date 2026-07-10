@@ -91,8 +91,10 @@ unit-test:
 .e2e-base: &e2e-base
   stage: e2e
   image: quay.io/podman/stable:latest
-  tags:
-    - privileged # Required for running systemd containers
+  # Untagged on purpose: aether gitlab-runner-k8s runs untagged jobs with
+  # executor privileged=true (nested podman --privileged / systemd). The old
+  # instance runner tagged `privileged` is stale; do not reintroduce that tag
+  # unless a live runner advertises it again.
   variables:
     STORAGE_DRIVER: vfs
   before_script:
