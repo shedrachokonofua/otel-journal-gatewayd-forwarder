@@ -191,9 +191,11 @@ build:release:
         echo "ERROR: binary appears dynamically linked"
         exit 1
       fi
+    - (cd target/release && sha256sum "${BINARY_NAME}" > SHA256SUMS)
   artifacts:
     paths:
       - target/release/${BINARY_NAME}
+      - target/release/SHA256SUMS
     expire_in: 30 days
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
@@ -216,6 +218,9 @@ upload:gitlab:latest:
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file "target/release/${BINARY_NAME}" \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/latest/${BINARY_NAME}-linux-amd64"
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file "target/release/SHA256SUMS" \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/latest/SHA256SUMS"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
@@ -231,6 +236,9 @@ upload:gitlab:release:
       curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
            --upload-file "target/release/${BINARY_NAME}" \
            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/${CI_COMMIT_TAG}/${BINARY_NAME}-linux-amd64"
+      curl --header "JOB-TOKEN: ${CI_JOB_TOKEN}" \
+           --upload-file "target/release/SHA256SUMS" \
+           "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/${CI_COMMIT_TAG}/SHA256SUMS"
   rules:
     - if: $CI_COMMIT_TAG
 
@@ -255,6 +263,9 @@ release:gitlab:
       links:
         - name: "${BINARY_NAME}-linux-amd64"
           url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/${CI_COMMIT_TAG}/${BINARY_NAME}-linux-amd64"
+          link_type: package
+        - name: "SHA256SUMS"
+          url: "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/${BINARY_NAME}/${CI_COMMIT_TAG}/SHA256SUMS"
           link_type: package
   rules:
     - if: $CI_COMMIT_TAG
@@ -304,6 +315,12 @@ upload:github:
         -H "Content-Type: application/octet-stream" \
         --upload-file "target/release/${BINARY_NAME}" \
         "https://uploads.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}/assets?name=${BINARY_NAME}-linux-amd64"
+
+      curl -sf -X POST \
+        -H "Authorization: token ${GITHUB_TOKEN}" \
+        -H "Content-Type: text/plain" \
+        --upload-file "target/release/SHA256SUMS" \
+        "https://uploads.github.com/repos/${GITHUB_REPO}/releases/${RELEASE_ID}/assets?name=SHA256SUMS"
 
       echo "GitHub release created successfully!"
   rules:
