@@ -32,8 +32,13 @@ ENV PATH="/root/.cargo/bin:${PATH}"
 COPY e2e/distros/${DISTRO}.sh /tmp/install-deps.sh
 RUN chmod +x /tmp/install-deps.sh && /tmp/install-deps.sh
 
-# Install OpenTelemetry Collector
-RUN curl -fsSL "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}/otelcol_${OTEL_VERSION}_linux_amd64.tar.gz" \
+# Install OpenTelemetry Collector (arch-aware: CI is amd64, local dev may be arm64)
+RUN ARCH=$(uname -m) && case "$ARCH" in \
+        x86_64) OTEL_ARCH=amd64 ;; \
+        aarch64) OTEL_ARCH=arm64 ;; \
+        *) echo "unsupported arch: $ARCH" >&2; exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${OTEL_VERSION}/otelcol_${OTEL_VERSION}_linux_${OTEL_ARCH}.tar.gz" \
     | tar -xz -C /usr/local/bin otelcol
 
 # Create directories

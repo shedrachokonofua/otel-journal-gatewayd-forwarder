@@ -10,11 +10,9 @@ exporters:
     rotation:
       max_megabytes: 10
       max_backups: 1
-  debug:
-    verbosity: detailed
 
 service:
   pipelines:
     logs:
       receivers: [otlp]
-      exporters: [file, debug]
+      exporters: [file]

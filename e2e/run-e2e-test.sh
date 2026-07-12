@@ -80,10 +80,18 @@ echo "[phase1] Sample journal entries from gatewayd:"
 curl -s "http://127.0.0.1:19531/entries?boot" -H "Accept: application/json" -H "Range: entries=:3" | jq -r '.MESSAGE // empty' 2>/dev/null | head -5 || true
 echo ""
 
-# Run the forwarder once
+# Run the forwarder once.
+# Output goes to a file, not stdout: via e2e-test.service stdout is journald,
+# and anything we print lands back in the journal the forwarder is draining
+# (feedback loop -> --once never exits). It also keeps the CI job log small.
+# The 120s timeout turns any future drain runaway into a fast failure instead
+# of a 1h job timeout.
 echo "[phase1] Running forwarder..."
-"$BIN" -c "$E2E_DIR/config.toml" --once -vv || {
-    echo "[phase1] FAIL: Forwarder failed with exit code $?"
+PHASE1_LOG=/tmp/phase1-forwarder.log
+timeout 120 "$BIN" -c "$E2E_DIR/config.toml" --once -vv >"$PHASE1_LOG" 2>&1 || {
+    RC=$?
+    echo "[phase1] FAIL: Forwarder failed with exit code $RC (124 = drain did not finish in 120s)"
+    tail -n 100 "$PHASE1_LOG"
     exit 1
 }
 
